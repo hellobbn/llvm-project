@@ -175,6 +175,28 @@ define i32 @fake_toascii(i8 %x) {
   ret i32 %y
 }
 
+declare inreg double @pow(double inreg, double inreg)
+declare inreg double @exp2(double inreg)
+
+; check to make sure parameter attributes are correctly applied
+define double @fake_exp2(double %x) {
+; CHECK-LABEL: @fake_exp2(
+; CHECK-NEXT:    [[Y:%.*]] = call inreg double @exp2(double inreg %x)
+; CHECK-NEXT:    ret double [[Y]]
+
+  %y = call inreg double @pow(double inreg 2.0, double inreg %x)
+  ret double %y
+}
+define double @fake_ldexp(i32 %x) {
+; CHECK-LABEL: @fake_ldexp(
+; CHECK-NEXT:    [[Z:%.*]] = call inreg double @ldexp(double inreg 1.0{{.*}}, i32 inreg %x)
+; CHECK-NEXT:    ret double [[Z]]
+
+  %y = sitofp i32 %x to double
+  %z = call inreg double @exp2(double %y)
+  ret double %z
+}
+
 
 attributes #0 = { nobuiltin }
 attributes #1 = { builtin }

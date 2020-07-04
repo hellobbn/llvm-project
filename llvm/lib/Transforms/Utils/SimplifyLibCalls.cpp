@@ -1449,6 +1449,22 @@ static Value *getIntToFPVal(Value *I2F, IRBuilderBase &B) {
 Value *LibCallSimplifier::replacePowWithExp(CallInst *Pow, IRBuilderBase &B) {
   Value *Base = Pow->getArgOperand(0), *Expo = Pow->getArgOperand(1);
   AttributeList Attrs = Pow->getCalledFunction()->getAttributes();
+  AttributeList ConstantBaseExpAttrs =
+      AttributeList()
+          .addAttributes(B.getContext(), AttributeList::FunctionIndex,
+                         Attrs.getAttributes(AttributeList::FunctionIndex))
+          .addAttributes(B.getContext(), AttributeList::ReturnIndex,
+                         Attrs.getAttributes(AttributeList::ReturnIndex))
+          .addAttributes(B.getContext(), AttributeList::FirstArgIndex + 0,
+                         Attrs.getAttributes(AttributeList::FirstArgIndex + 1));
+  // Where we combine the two pow parameters in some way, it's not trivial to
+  // determine which attributes should belong to the output.
+  AttributeList GenericExpAttrs =
+      AttributeList()
+          .addAttributes(B.getContext(), AttributeList::FunctionIndex,
+                         Attrs.getAttributes(AttributeList::FunctionIndex))
+          .addAttributes(B.getContext(), AttributeList::ReturnIndex,
+                         Attrs.getAttributes(AttributeList::ReturnIndex));
   Module *Mod = Pow->getModule();
   Type *Ty = Pow->getType();
   bool Ignored;
@@ -1552,7 +1568,7 @@ Value *LibCallSimplifier::replacePowWithExp(CallInst *Pow, IRBuilderBase &B) {
                             FMul, "exp2");
       else
         return emitUnaryFloatFnCall(FMul, TLI, LibFunc_exp2, LibFunc_exp2f,
-                                    LibFunc_exp2l, B, Attrs);
+                                    LibFunc_exp2l, B, ConstantBaseExpAttrs);
     }
   }
 
@@ -1561,7 +1577,7 @@ Value *LibCallSimplifier::replacePowWithExp(CallInst *Pow, IRBuilderBase &B) {
   if (match(Base, m_SpecificFP(10.0)) &&
       hasFloatFn(TLI, Ty, LibFunc_exp10, LibFunc_exp10f, LibFunc_exp10l))
     return emitUnaryFloatFnCall(Expo, TLI, LibFunc_exp10, LibFunc_exp10f,
-                                LibFunc_exp10l, B, Attrs);
+                                LibFunc_exp10l, B, ConstantBaseExpAttrs);
 
   // pow(x, y) -> exp2(log2(x) * y)
   if (Pow->hasApproxFunc() && Pow->hasNoNaNs() && BaseF->isFiniteNonZero() &&
@@ -1584,7 +1600,7 @@ Value *LibCallSimplifier::replacePowWithExp(CallInst *Pow, IRBuilderBase &B) {
                             FMul, "exp2");
       else if (hasFloatFn(TLI, Ty, LibFunc_exp2, LibFunc_exp2f, LibFunc_exp2l))
         return emitUnaryFloatFnCall(FMul, TLI, LibFunc_exp2, LibFunc_exp2f,
-                                    LibFunc_exp2l, B, Attrs);
+                                    LibFunc_exp2l, B, GenericExpAttrs);
     }
   }
 
@@ -1616,6 +1632,14 @@ static Value *getSqrtCall(Value *V, AttributeList Attrs, bool NoErrno,
 Value *LibCallSimplifier::replacePowWithSqrt(CallInst *Pow, IRBuilderBase &B) {
   Value *Sqrt, *Base = Pow->getArgOperand(0), *Expo = Pow->getArgOperand(1);
   AttributeList Attrs = Pow->getCalledFunction()->getAttributes();
+  AttributeList SqrtAttrs =
+      AttributeList()
+          .addAttributes(B.getContext(), AttributeList::FunctionIndex,
+                         Attrs.getAttributes(AttributeList::FunctionIndex))
+          .addAttributes(B.getContext(), AttributeList::ReturnIndex,
+                         Attrs.getAttributes(AttributeList::ReturnIndex))
+          .addAttributes(B.getContext(), AttributeList::FirstArgIndex + 0,
+                         Attrs.getAttributes(AttributeList::FirstArgIndex + 0));
   Module *Mod = Pow->getModule();
   Type *Ty = Pow->getType();
 
@@ -1629,7 +1653,7 @@ Value *LibCallSimplifier::replacePowWithSqrt(CallInst *Pow, IRBuilderBase &B) {
   if (ExpoF->isNegative() && (!Pow->hasApproxFunc() && !Pow->hasAllowReassoc()))
     return nullptr;
 
-  Sqrt = getSqrtCall(Base, Attrs, Pow->doesNotAccessMemory(), Mod, B, TLI);
+  Sqrt = getSqrtCall(Base, SqrtAttrs, Pow->doesNotAccessMemory(), Mod, B, TLI);
   if (!Sqrt)
     return nullptr;
 
@@ -1798,10 +1822,25 @@ Value *LibCallSimplifier::optimizeExp2(CallInst *CI, IRBuilderBase &B) {
   // Turn exp2(uitofp(x)) -> ldexp(1.0, zext(x))  if sizeof(x) < 32
   if ((isa<SIToFPInst>(Op) || isa<UIToFPInst>(Op)) &&
       hasFloatFn(TLI, Ty, LibFunc_ldexp, LibFunc_ldexpf, LibFunc_ldexpl)) {
-    if (Value *Exp = getIntToFPVal(Op, B))
+    if (Value *Exp = getIntToFPVal(Op, B)) {
+      AttributeList Attrs = CI->getCalledFunction()->getAttributes();
+      AttributeList LdexpAttrs =
+          AttributeList()
+              .addAttributes(B.getContext(), AttributeList::FunctionIndex,
+                             Attrs.getAttributes(AttributeList::FunctionIndex))
+              .addAttributes(B.getContext(), AttributeList::ReturnIndex,
+                             Attrs.getAttributes(AttributeList::ReturnIndex))
+              .addAttributes(
+                  B.getContext(), AttributeList::FirstArgIndex + 0,
+                  Attrs.getAttributes(AttributeList::FirstArgIndex + 0))
+              .addAttributes(
+                  B.getContext(), AttributeList::FirstArgIndex + 1,
+                  Attrs.getAttributes(AttributeList::FirstArgIndex + 0));
+
       return emitBinaryFloatFnCall(ConstantFP::get(Ty, 1.0), Exp, TLI,
-                                   LibFunc_ldexp, LibFunc_ldexpf, LibFunc_ldexpl,
-                                   B, CI->getCalledFunction()->getAttributes());
+                                   LibFunc_ldexp, LibFunc_ldexpf,
+                                   LibFunc_ldexpl, B, LdexpAttrs);
+    }
   }
 
   return Ret;
