@@ -2017,6 +2017,9 @@ struct AbstractAttribute : public IRPosition {
 
   /// This function should return the name of the AbstractAttribute
   virtual const std::string getName() const = 0;
+
+  /// This function should return the address of the ID of the AbstractAttribute
+  virtual const char *getIdAddr() const = 0;
   ///}
 
   /// Allow the Attributor access to the protected methods.
@@ -2134,6 +2137,9 @@ struct AAReturnedValues
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAReturnedValues"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2155,6 +2161,9 @@ struct AANoUnwind
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoUnwind"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2175,6 +2184,9 @@ struct AANoSync
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoSync"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2198,6 +2210,9 @@ struct AANonNull
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANonNull"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2220,6 +2235,9 @@ struct AANoRecurse
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoRecurse"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2241,6 +2259,9 @@ struct AAWillReturn
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAWillReturn"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2270,6 +2291,9 @@ struct AAUndefinedBehavior
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAUndefinedBehavior"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2302,6 +2326,9 @@ struct AAReachability : public StateWrapper<BooleanState, AbstractAttribute> {
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAReachability"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2323,6 +2350,9 @@ struct AANoAlias
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoAlias"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2346,6 +2376,9 @@ struct AANoFree
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoFree"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2367,6 +2400,9 @@ struct AANoReturn
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoReturn"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2424,6 +2460,9 @@ public:
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAIsDead"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2618,6 +2657,9 @@ struct AADereferenceable
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AADereferenceable"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2638,6 +2680,9 @@ struct AAAlign : public IRAttribute<
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAAlign"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Create an abstract attribute view for the position \p IRP.
   static AAAlign &createForPosition(const IRPosition &IRP, Attributor &A);
@@ -2696,6 +2741,9 @@ struct AANoCapture
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AANoCapture"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2717,6 +2765,9 @@ struct AAValueSimplify : public StateWrapper<BooleanState, AbstractAttribute> {
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAValueSimplify"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -2736,6 +2787,9 @@ struct AAHeapToStack : public StateWrapper<BooleanState, AbstractAttribute> {
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAHeapToStack"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2772,6 +2826,9 @@ struct AAPrivatizablePtr
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAPrivatizablePtr"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2826,6 +2883,9 @@ struct AAMemoryBehavior
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAMemoryBehavior"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
@@ -2988,6 +3048,9 @@ struct AAMemoryLocation
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAMemoryLocation"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   /// Unique ID (due to the unique address)
   static const char ID;
 };
@@ -3035,6 +3098,9 @@ struct AAValueConstantRange
 
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAValueConstantRange"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
 
   /// Unique ID (due to the unique address)
   static const char ID;
