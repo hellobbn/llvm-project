@@ -838,6 +838,9 @@ struct AAICVTracker : public StateWrapper<BooleanState, AbstractAttribute> {
   /// See AbstractAttribute::getName()
   const std::string getName() const override { return "AAICVTracker"; }
 
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
   static const char ID;
 };
 
