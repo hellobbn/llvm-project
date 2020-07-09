@@ -36,7 +36,6 @@ define i32* @checkAndAdvance(i32* align 16 %0) {
 ; GRAPH: [AANoUnwind] for CtxI '  %2 = load i32, i32* %0, align 4' at position {fn:checkAndAdvance [checkAndAdvance@-1]}
 ; GRAPH:  updates [AANoCapture] for CtxI '  %2 = load i32, i32* %0, align 4' at position {arg: [@0]}
 ; GRAPH:  updates [AANoUnwind] for CtxI '  %6 = call i32* @checkAndAdvance(i32* %5)' at position {cs: [@-1]}
-; GRAPH:  updates [AANoCapture] for CtxI '  %2 = load i32, i32* %0, align 4' at position {arg: [@0]}
 
 ; GRAPH: [AANoUnwind] for CtxI '  %6 = call i32* @checkAndAdvance(i32* %5)' at position {cs: [@-1]}
 ; GRAPH:  updates [AAIsDead] for CtxI '  %6 = call i32* @checkAndAdvance(i32* %5)' at position {cs_ret: [@-1]}

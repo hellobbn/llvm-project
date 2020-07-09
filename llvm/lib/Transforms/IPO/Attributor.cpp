@@ -1776,8 +1776,17 @@ void Attributor::rememberDependences() {
 
   for (DepInfo &DI : *DependenceStack.back()) {
     auto &DepAAs = const_cast<AbstractAttribute &>(*DI.FromAA).Deps;
-    DepAAs.push_back(AbstractAttribute::DepTy(
-        const_cast<AbstractAttribute *>(DI.ToAA), unsigned(DI.DepClass)));
+
+    bool found = false;
+    for (auto IterAA : DepAAs) {
+      if (IterAA.getPointer() == DI.ToAA &&
+          IterAA.getInt() == unsigned(DI.DepClass))
+        found = true;
+    }
+
+    if (!found)
+      DepAAs.push_back(AbstractAttribute::DepTy(
+          const_cast<AbstractAttribute *>(DI.ToAA), unsigned(DI.DepClass)));
   }
 }
 
