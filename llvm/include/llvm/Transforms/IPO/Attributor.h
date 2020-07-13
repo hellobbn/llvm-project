@@ -2857,6 +2857,27 @@ struct AANoCapture
   static const char ID;
 };
 
+/// An abstract interface for noundef attributes
+struct AANoUndef : public IRAttribute<Attribute::NoUndef, StateWrapper<BooleanState, AbstractAttribute>> {
+  using Base = StateWrapper<BooleanState, AbstractAttribute>;
+  AANoUndef(const IRPosition &IRP, Attributor &A) : IRAttribute(IRP) {}
+
+  /// Return true if we assume that the underlying value is not undef
+  bool isAssumedNoUndef() const { return getAssumed(); }
+
+  /// Return true if we know that the underlying value is not undef
+  bool isKnownNoUndef() const { return getKnown(); }
+
+  /// Create an abstract attribute view for the position \p IRP
+  static AANoUndef &createForPosition(const IRPosition &IRP, Attributor &A);
+
+  /// See AbstractAttribute::getName()
+  const std::string getName() const override { return "AANoUndef"; }
+
+  /// Unique ID (due to the unique address)
+  static const char ID;
+};
+
 /// An abstract interface for value simplify abstract attribute.
 struct AAValueSimplify : public StateWrapper<BooleanState, AbstractAttribute> {
   using Base = StateWrapper<BooleanState, AbstractAttribute>;

@@ -117,6 +117,7 @@ PIPE_OPERATOR(AAMemoryLocation)
 PIPE_OPERATOR(AAValueConstantRange)
 PIPE_OPERATOR(AAPrivatizablePtr)
 PIPE_OPERATOR(AAUndefinedBehavior)
+PIPE_OPERATOR(AANoUndef)
 
 #undef PIPE_OPERATOR
 } // namespace llvm
@@ -1052,9 +1053,10 @@ ChangeStatus AAReturnedValuesImpl::updateImpl(Attributor &A) {
   // map, NewRVsMap.
   decltype(ReturnedValues) NewRVsMap;
 
-  auto HandleReturnValue = [&](Value *RV, SmallSetVector<ReturnInst *, 4> &RIs) {
-    LLVM_DEBUG(dbgs() << "[AAReturnedValues] Returned value: " << *RV
-                      << " by #" << RIs.size() << " RIs\n");
+  auto HandleReturnValue = [&](Value *RV,
+                               SmallSetVector<ReturnInst *, 4> &RIs) {
+    LLVM_DEBUG(dbgs() << "[AAReturnedValues] Returned value: " << *RV << " by #"
+                      << RIs.size() << " RIs\n");
     CallBase *CB = dyn_cast<CallBase>(RV);
     if (!CB || UnresolvedCalls.count(CB))
       return;
@@ -3424,7 +3426,6 @@ struct AADereferenceableFloating : AADereferenceableImpl {
         DerefBytes = DS.DerefBytesState.getAssumed();
         T.GlobalState &= DS.GlobalState;
       }
-
 
       // For now we do not try to "increase" dereferenceability due to negative
       // indices as we first have to come up with code to deal with loops and
@@ -7073,6 +7074,222 @@ struct AAValueConstantRangeCallSiteArgument : AAValueConstantRangeFloating {
     STATS_DECLTRACK_CSARG_ATTR(value_range)
   }
 };
+
+struct AANoUndefImpl : AANoUndef {
+  AANoUndefImpl(const IRPosition &IRP, Attributor &A) : AANoUndef(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefImpl] initialize.\n";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefImpl]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+    if (getCtxI())
+      getCtxI()->print(errs());
+    else
+      errs() << "[null]";
+    errs() << " and value " << getAssociatedValue().getName() << '\n';
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::getAsStr()
+  const std::string getAsStr() const override {
+    return getAssumed() ? "noundef" : "may-undef";
+  }
+
+  /// See AbstractAttribute::manifest(...)
+  ChangeStatus manifest(Attributor &A) override {
+    ChangeStatus Changed = AANoUndef::manifest(A);
+
+    return Changed;
+  }
+};
+
+/// NoUndef attribute for a floating value
+/// NOTE: we don't touch this for now
+struct AANoUndefFloating : public AANoUndefImpl {
+  AANoUndefFloating(const IRPosition &IRP, Attributor &A)
+      : AANoUndefImpl(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefFloating] initialize.\n";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefFloating]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+
+    return ChangeStatus::UNCHANGED;
+  }
+
+  /// See AbstractAttribute::trackStatistics
+  void trackStatistics() const override {
+    STATS_DECLTRACK_FLOATING_ATTR(noundef)
+  }
+};
+
+/// NoUndef attribute for function return value
+struct AANoUndefReturned final
+    : AAReturnedFromReturnedValues<AANoUndef, AANoUndefImpl> {
+  AANoUndefReturned(const IRPosition &IRP, Attributor &A)
+      : AAReturnedFromReturnedValues<AANoUndef, AANoUndefImpl>(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefReturned] initialize.\n";
+    auto &Val = getAssociatedValue();
+
+    // Check if the returned value is a constant that is not undef
+    // If so, the return value cannot be undef or poison
+    auto CheckReturnValue = [&](Value &RV) -> bool {
+      if (isa<Constant>(RV) && !isa<UndefValue>(RV)) {
+        errs() << "constant but not undef\n";
+        return true;
+      }
+    };
+
+    if (A.checkForAllReturnedValues(CheckReturnValue, *this))
+      indicateOptimisticFixpoint();
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefReturned]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+    if (getCtxI())
+      getCtxI()->print(errs());
+    else
+      errs() << "[null]";
+    errs() << " and value " << getAnchorValue().getName() << '\n';
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::manifest(...)
+  ChangeStatus manifest(Attributor &A) override {
+    ChangeStatus Changed = AANoUndef::manifest(A);
+
+    return Changed;
+  }
+
+  /// See AbstractAttribute::tractStatistics
+  void trackStatistics() const override { STATS_DECLTRACK_FNRET_ATTR(noundef) }
+};
+
+/// NoUndef attribute for function argument
+struct AANoUndefArgument final
+    : AAArgumentFromCallSiteArguments<AANoUndef, AANoUndefImpl> {
+  AANoUndefArgument(const IRPosition &IRP, Attributor &A)
+      : AAArgumentFromCallSiteArguments<AANoUndef, AANoUndefImpl>(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefArgument] initialize.\n";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefArgument]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+    if (getCtxI())
+      getCtxI()->print(errs());
+    else
+      errs() << "[null]";
+    errs() << " and value " << getAnchorValue().getName() << '\n';
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::manifest(...)
+  ChangeStatus manifest(Attributor &A) override {
+    ChangeStatus Changed = AANoUndef::manifest(A);
+
+    return Changed;
+  }
+
+  /// See AbstractAttribute::trackStatistics
+  void trackStatistics() const override { STATS_DECLTRACK_ARG_ATTR(noundef) }
+};
+
+struct AANoUndefCallSiteArgument final : AANoUndefFloating {
+  AANoUndefCallSiteArgument(const IRPosition &IRP, Attributor &A)
+      : AANoUndefFloating(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefCallSiteArgument] initialize.\n";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefCallSiteArgument]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+    if (getCtxI())
+      getCtxI()->print(errs());
+    else
+      errs() << "[null]";
+    errs() << " and value " << getAnchorValue().getName() << '\n';
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::manifest(...)
+  ChangeStatus manifest(Attributor &A) override {
+    ChangeStatus Changed = AANoUndef::manifest(A);
+
+    return Changed;
+  }
+
+  /// See AbstractAttribute::trackStatistics()
+  void trackStatistics() const override { STATS_DECLTRACK_CSARG_ATTR(noundef) }
+};
+
+/// NoUndef attribute for a call site return position
+struct AANoUndefCallSiteReturned final
+    : AACallSiteReturnedFromReturned<AANoUndef, AANoUndefImpl> {
+  AANoUndefCallSiteReturned(const IRPosition &IRP, Attributor &A)
+      : AACallSiteReturnedFromReturned<AANoUndef, AANoUndefImpl>(IRP, A) {}
+
+  /// See AbstractAttribute::initialize(...)
+  void initialize(Attributor &A) override {
+    errs() << "[AANoUndefCallSiteReturned] initialize.\n";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  ChangeStatus updateImpl(Attributor &A) override {
+    errs() << "[AANoUndefCallSiteReturned]: run on function: "
+           << (getAnchorScope() ? getAnchorScope()->getName() : "[Null]")
+           << " and ctxI: ";
+    if (getCtxI())
+      getCtxI()->print(errs());
+    else
+      errs() << "[null]";
+    errs() << " and value " << getAnchorValue().getName() << '\n';
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::manifest(...)
+  ChangeStatus manifest(Attributor &A) override {
+    ChangeStatus Changed = AANoUndef::manifest(A);
+
+    return Changed;
+  }
+
+  /// See AbstractAttribute::trackStatistics()
+  void trackStatistics() const override { STATS_DECLTRACK_CSRET_ATTR(noundef) }
+};
 } // namespace
 
 const char AAReturnedValues::ID = 0;
@@ -7096,6 +7313,7 @@ const char AAPrivatizablePtr::ID = 0;
 const char AAMemoryBehavior::ID = 0;
 const char AAMemoryLocation::ID = 0;
 const char AAValueConstantRange::ID = 0;
+const char AANoUndef::ID = 0;
 
 // Macro magic to create the static generator function for attributes that
 // follow the naming scheme.
@@ -7205,6 +7423,7 @@ CREATE_VALUE_ABSTRACT_ATTRIBUTE_FOR_POSITION(AADereferenceable)
 CREATE_VALUE_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAAlign)
 CREATE_VALUE_ABSTRACT_ATTRIBUTE_FOR_POSITION(AANoCapture)
 CREATE_VALUE_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAValueConstantRange)
+CREATE_VALUE_ABSTRACT_ATTRIBUTE_FOR_POSITION(AANoUndef)
 
 CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAValueSimplify)
 CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAIsDead)
