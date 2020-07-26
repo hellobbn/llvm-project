@@ -173,6 +173,20 @@ static bool addIfNotExistent(LLVMContext &Ctx, const Attribute &Attr,
   llvm_unreachable("Expected enum or string attribute!");
 }
 
+/// Calculate the cost of internalizing the function \p F and determine whether
+/// internalizing such function could be beneficial.
+static InternalizeCost &getInternalizeCost(Function &F) {
+  /// TODO: for now we only rule out situations where the function cannot be
+  ///       internalized. The detailed algorithm will be implemented later.
+  if (F.isDeclaration() || F.hasExactDefinition() || !F.getNumUses() ||
+      F.getLinkage() == GlobalValue::LinkOnceAnyLinkage ||
+      F.getLinkage() == GlobalValue::WeakAnyLinkage) {
+    return InternalizeCost::getNever(F);
+  }
+
+  return InternalizeCost::getAlways(F);
+}
+
 Argument *IRPosition::getAssociatedArgument() const {
   if (getPositionKind() == IRP_ARGUMENT)
     return cast<Argument>(&getAnchorValue());
@@ -2073,6 +2087,15 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
   assert(Success && "Expected the check call to be successful!");
 }
 
+bool Attributor::shouldInternalizeFunction(Function &F) {
+  if (auto *IC = InternalizationMap[&F])
+    return IC->shouldInternalize();
+  else {
+    InternalizationMap[&F] = &getInternalizeCost(F);
+    return InternalizationMap[&F]->shouldInternalize();
+  }
+}
+
 /// Helpers to ease debugging through output streams and print calls.
 ///
 ///{
@@ -2186,9 +2209,7 @@ static bool runAttributorOnFunctions(InformationCache &InfoCache,
   //       a function is "benefitial"
   if (AllowDeepWrapper)
     for (Function *F : Functions)
-      if (!F->hasExactDefinition() && F->getNumUses() &&
-          F->getLinkage() != llvm::GlobalValue::LinkOnceAnyLinkage &&
-          F->getLinkage() != llvm::GlobalValue::WeakAnyLinkage) {
+      if (A.shouldInternalizeFunction(*F)) {
         Function *NewF = internalizeFunction(*F);
         Functions.insert(NewF);
 

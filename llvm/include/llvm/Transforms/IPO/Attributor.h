@@ -134,6 +134,16 @@ struct AAIsDead;
 
 class Function;
 
+namespace InternalizeConstants {
+/// Default threshold
+const int DefaultThreshold = 100;
+
+// Various magic constants used to adjust heuristics
+const int InstrCost = 5;
+const int DepBonus = 5;
+
+} // namespace InternalizeConstants
+
 /// Simple enum classes that forces properties to be spelled out explicitly.
 ///
 ///{
@@ -150,6 +160,58 @@ enum class DepClassTy {
   OPTIONAL,
 };
 ///}
+
+/// Represents the cost of internalizing a function.
+///
+/// The cost represents a unitless amount; smaller values increase the
+/// likelihood of the function being internalized.
+class InternalizeCost {
+  enum SentinelValues {
+    AlwaysInternalizeCost = INT_MIN,
+    NeverInternalizeCost = INT_MAX
+  };
+
+  /// The function to be internalized
+  Function &F;
+
+  /// The estimated cost of internalizing a function
+  int Cost = 0;
+
+  /// The threshold against which this cost is computed.
+  int Threshold = 0;
+
+  /// Trivial constructor
+  InternalizeCost(Function &F, int Cost, int Threshold)
+      : F(F), Cost(Cost), Threshold(Threshold) {}
+
+public:
+  static InternalizeCost &get(int Cost, int Threshold, Function &F) {
+    return *new InternalizeCost(F, Cost, Threshold);
+  }
+  static InternalizeCost &getNever(Function &F) {
+    return *new InternalizeCost(F, NeverInternalizeCost, 0);
+  }
+  static InternalizeCost &getAlways(Function &F) {
+    return *new InternalizeCost(F, AlwaysInternalizeCost, 0);
+  }
+
+  /// Test whether the internalize cost is low enough for internalizing
+  explicit operator bool() const { return Cost < Threshold; }
+  bool shouldInternalize() const { return Cost < Threshold; }
+
+  /// Get the function this cost corresponds to
+  Function &getFunction() const { return F; }
+
+  /// Get the internalize cost estimate.
+  int getCost() const { return Cost; }
+
+  /// Get the threshold against which the cost was computed.
+  int getThreshold() const { return Threshold; }
+
+  /// Get the cost delta from the threshold for internalizing.
+  /// Returns a negative value if the cost is too high to internalize
+  int getCostDelta() const { return Threshold - getCost(); }
+};
 
 /// The data structure for the nodes of a dependency graph
 struct AADepGraphNode {
@@ -1123,6 +1185,9 @@ struct Attributor {
   /// various places.
   void identifyDefaultAbstractAttributes(Function &F);
 
+  /// Determine whether the function \p F can be internalized
+  bool shouldInternalizeFunction(Function &F);
+
   /// Determine whether the function \p F is IPO amendable
   ///
   /// If a function is exactly defined or it has alwaysinline attribute
@@ -1506,6 +1571,9 @@ private:
 
   /// A set to remember the functions we already assume to be live and visited.
   DenseSet<const Function *> VisitedFunctions;
+
+  /// A map for caching results of queries for getInternalizeCost
+  DenseMap<const Function *, InternalizeCost *> InternalizationMap;
 
   /// Uses we replace with a new value after manifest is done. We will remove
   /// then trivially dead instructions as well.
