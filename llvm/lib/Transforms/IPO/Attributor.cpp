@@ -173,18 +173,16 @@ static bool addIfNotExistent(LLVMContext &Ctx, const Attribute &Attr,
   llvm_unreachable("Expected enum or string attribute!");
 }
 
-/// Calculate the cost of internalizing the function \p F and determine whether
-/// internalizing such function could be beneficial.
+/// Calculate the initial cost of internalizing the function \p F and determine
+/// whether internalizing such function could be beneficial.
 static InternalizeCost &getInternalizeCost(Function &F) {
-  /// TODO: for now we only rule out situations where the function cannot be
-  ///       internalized. The detailed algorithm will be implemented later.
   if (F.isDeclaration() || F.hasExactDefinition() || !F.getNumUses() ||
       F.getLinkage() == GlobalValue::LinkOnceAnyLinkage ||
       F.getLinkage() == GlobalValue::WeakAnyLinkage) {
     return InternalizeCost::getNever(F);
   }
 
-  return InternalizeCost::getAlways(F);
+  return InternalizeCost::get(0, InternalizeConstants::DefaultThreshold, F);
 }
 
 Argument *IRPosition::getAssociatedArgument() const {
@@ -1866,8 +1864,19 @@ void Attributor::rememberDependences() {
 
   for (DepInfo &DI : *DependenceStack.back()) {
     auto &DepAAs = const_cast<AbstractAttribute &>(*DI.FromAA).Deps;
-    DepAAs.push_back(AbstractAttribute::DepTy(
-        const_cast<AbstractAttribute *>(DI.ToAA), unsigned(DI.DepClass)));
+
+    bool Duplicated = false;
+    for (auto AAIt : DepAAs) {
+      if (AAIt.getPointer() == DI.ToAA &&
+          unsigned(DI.DepClass) == AAIt.getInt()) {
+        Duplicated = true;
+        break;
+      }
+    }
+
+    if (!Duplicated)
+      DepAAs.push_back(AbstractAttribute::DepTy(
+          const_cast<AbstractAttribute *>(DI.ToAA), unsigned(DI.DepClass)));
   }
 }
 
