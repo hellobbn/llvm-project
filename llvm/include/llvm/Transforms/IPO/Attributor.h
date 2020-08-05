@@ -2212,10 +2212,18 @@ raw_ostream &operator<<(raw_ostream &OS, const IntegerRangeState &State);
 
 struct AttributorPass : public PassInfoMixin<AttributorPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+  AttributorPass(unsigned OptLevel = 1) : OptLevel(OptLevel) { }
+
+private:
+  unsigned OptLevel;
 };
 struct AttributorCGSCCPass : public PassInfoMixin<AttributorCGSCCPass> {
+  AttributorCGSCCPass(unsigned OptLevel = 1) : OptLevel(OptLevel) { }
   PreservedAnalyses run(LazyCallGraph::SCC &C, CGSCCAnalysisManager &AM,
                         LazyCallGraph &CG, CGSCCUpdateResult &UR);
+
+private:
+  unsigned OptLevel;
 };
 
 Pass *createAttributorLegacyPass();

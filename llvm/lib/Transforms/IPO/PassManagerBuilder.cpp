@@ -623,6 +623,7 @@ void PassManagerBuilder::populateModulePassManager(
   }
 
   // Infer attributes on declarations, call sites, arguments, etc. for an SCC.
+  // TODO: add opt level here (and multiple instances in this file)
   if (AttributorRun & AttributorRunOption::CGSCC)
     MPM.add(createAttributorCGSCCLegacyPass());
 

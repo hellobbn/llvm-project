@@ -867,7 +867,7 @@ PassBuilder::buildInlinerPipeline(OptimizationLevel Level, ThinLTOPhase Phase,
   // invoke or a call.
 
   if (AttributorRun & AttributorRunOption::CGSCC)
-    MainCGPipeline.addPass(AttributorCGSCCPass());
+    MainCGPipeline.addPass(AttributorCGSCCPass(Level.getSpeedupLevel()));
 
   if (PTO.Coroutines)
     MainCGPipeline.addPass(CoroSplitPass());
@@ -973,7 +973,7 @@ ModulePassManager PassBuilder::buildModuleSimplificationPipeline(
   }
 
   if (AttributorRun & AttributorRunOption::MODULE)
-    MPM.addPass(AttributorPass());
+    MPM.addPass(AttributorPass(Level.getSpeedupLevel()));
 
   // Lower type metadata and the type.test intrinsic in the ThinLTO
   // post link pipeline after ICP. This is to enable usage of the type
