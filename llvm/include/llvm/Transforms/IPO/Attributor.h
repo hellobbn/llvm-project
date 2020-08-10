@@ -1414,6 +1414,38 @@ struct Attributor {
   BumpPtrAllocator &Allocator;
 
 private:
+  /// This method will run fixpoint iteration for specified times, and if
+  /// specified, clear all side effects after running such iteration. This
+  /// can also verify if we actually run the needed iteration count.
+  ///
+  /// This can be used to get a nearly (if not already) complete dependency
+  /// graph which can be used for internalization cost analysis.
+  ///
+  // FIXME: Random thought: we might not need this function. Instead, all those
+  //        things can be achieved by modifying the original `runTillFixpoint`
+  //        function
+  // TODO: We can have a lamda or whatever to .. for example do "post iteration"
+  //        analysis. For now, this can be used for cost interface. Hopefully this
+  //        can be "generic", for example, we can verify max iteration count using
+  //        this machenism. Or even better, SCC scheduling.
+  //        For now that we are doing is do the number of iterations specified by
+  //        ItCount and return the actual iteration count.
+  // TODO: we are going to replace the original "runTillFixpoint" function
+  //        with the newly created function.
+  //        Actually we can set up a lamda expression and a parameter (env)
+  //        interface and use this to do whatever we can do.
+  //        However, I think a pipeline with lambda expression cannot be used
+  //        here.
+  // FIXME: I think many things should be done here, but codes many are
+  //        duplicated
+  //        anyway, I still want this, or we can use "runIterationFor(int
+  //        count)" to speficy the times of fix-point iteration and then in this
+  //        function, use an interface to handle other things.
+  unsigned runIterationForTimes(const unsigned ItCount, bool Verify = false);
+
+  /// This method will settle AAs that have not reached fixpoint
+  void settleAA();
+
   /// This method will do fixpoint iteration until fixpoint or the
   /// maximum iteration count is reached.
   ///
@@ -1525,6 +1557,14 @@ private:
   /// Wheather attributes are being `seeded`, always false after ::run function
   /// gets called \see getOrCreateAAFor.
   bool SeedingPeriod = true;
+
+  /// Sets storing states when doing fixpoint iterations.
+  ///
+  ///{
+  SmallVector<AbstractAttribute *, 32> IterationChangedAAs;
+  SetVector<AbstractAttribute *> IterationWorklist;
+  SetVector<AbstractAttribute *> IterationInvalidAAs;
+  ///}
 
   /// Functions, blocks, and instructions we delete after manifest is done.
   ///

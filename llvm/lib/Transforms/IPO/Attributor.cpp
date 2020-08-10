@@ -1048,9 +1048,8 @@ bool Attributor::checkForAllReadWriteInstructions(
 
   return true;
 }
-
-void Attributor::runTillFixpoint() {
-  TimeTraceScope TimeScope("Attributor::runTillFixpoint");
+  
+unsigned Attributor::runIterationForTimes(const unsigned ItCount, bool Verify) {
   LLVM_DEBUG(dbgs() << "[Attributor] Identified and initialized "
                     << DG.SyntheticRoot.Deps.size()
                     << " abstract attributes.\n");
@@ -1060,21 +1059,20 @@ void Attributor::runTillFixpoint() {
 
   unsigned IterationCounter = 1;
 
-  SmallVector<AbstractAttribute *, 32> ChangedAAs;
-  SetVector<AbstractAttribute *> Worklist, InvalidAAs;
-  Worklist.insert(DG.SyntheticRoot.begin(), DG.SyntheticRoot.end());
+  IterationWorklist.insert(DG.SyntheticRoot.begin(), DG.SyntheticRoot.end());
 
   do {
     // Remember the size to determine new attributes.
     size_t NumAAs = DG.SyntheticRoot.Deps.size();
     LLVM_DEBUG(dbgs() << "\n\n[Attributor] #Iteration: " << IterationCounter
-                      << ", Worklist size: " << Worklist.size() << "\n");
+                      << ", Worklist size: " << IterationWorklist.size()
+                      << "\n");
 
     // For invalid AAs we can fix dependent AAs that have a required dependence,
     // thereby folding long dependence chains in a single step without the need
     // to run updates.
-    for (unsigned u = 0; u < InvalidAAs.size(); ++u) {
-      AbstractAttribute *InvalidAA = InvalidAAs[u];
+    for (unsigned u = 0; u < IterationInvalidAAs.size(); ++u) {
+      AbstractAttribute *InvalidAA = IterationInvalidAAs[u];
 
       // Check the dependences to fast track invalidation.
       LLVM_DEBUG(dbgs() << "[Attributor] InvalidAA: " << *InvalidAA << " has "
@@ -1085,73 +1083,80 @@ void Attributor::runTillFixpoint() {
         InvalidAA->Deps.pop_back();
         AbstractAttribute *DepAA = cast<AbstractAttribute>(Dep.getPointer());
         if (Dep.getInt() == unsigned(DepClassTy::OPTIONAL)) {
-          Worklist.insert(DepAA);
+          IterationWorklist.insert(DepAA);
           continue;
         }
         DepAA->getState().indicatePessimisticFixpoint();
         assert(DepAA->getState().isAtFixpoint() && "Expected fixpoint state!");
         if (!DepAA->getState().isValidState())
-          InvalidAAs.insert(DepAA);
+          IterationInvalidAAs.insert(DepAA);
         else
-          ChangedAAs.push_back(DepAA);
+          IterationChangedAAs.push_back(DepAA);
       }
     }
 
     // Add all abstract attributes that are potentially dependent on one that
     // changed to the work list.
-    for (AbstractAttribute *ChangedAA : ChangedAAs)
+    for (AbstractAttribute *ChangedAA : IterationChangedAAs)
       while (!ChangedAA->Deps.empty()) {
-        Worklist.insert(
+        IterationWorklist.insert(
             cast<AbstractAttribute>(ChangedAA->Deps.back().getPointer()));
         ChangedAA->Deps.pop_back();
       }
 
     LLVM_DEBUG(dbgs() << "[Attributor] #Iteration: " << IterationCounter
-                      << ", Worklist+Dependent size: " << Worklist.size()
-                      << "\n");
+                      << ", Worklist+Dependent size: "
+                      << IterationWorklist.size() << "\n");
 
     // Reset the changed and invalid set.
-    ChangedAAs.clear();
-    InvalidAAs.clear();
+    IterationChangedAAs.clear();
+    IterationInvalidAAs.clear();
 
     // Update all abstract attribute in the work list and record the ones that
     // changed.
-    for (AbstractAttribute *AA : Worklist) {
+    for (AbstractAttribute *AA : IterationWorklist) {
       const auto &AAState = AA->getState();
       if (!AAState.isAtFixpoint())
         if (updateAA(*AA) == ChangeStatus::CHANGED)
-          ChangedAAs.push_back(AA);
+          IterationChangedAAs.push_back(AA);
 
       // Use the InvalidAAs vector to propagate invalid states fast transitively
       // without requiring updates.
       if (!AAState.isValidState())
-        InvalidAAs.insert(AA);
+        IterationInvalidAAs.insert(AA);
     }
 
     // Add attributes to the changed set if they have been created in the last
     // iteration.
-    ChangedAAs.append(DG.SyntheticRoot.begin() + NumAAs,
-                      DG.SyntheticRoot.end());
+    IterationChangedAAs.append(DG.SyntheticRoot.begin() + NumAAs,
+                               DG.SyntheticRoot.end());
 
     // Reset the work list and repopulate with the changed abstract attributes.
     // Note that dependent ones are added above.
-    Worklist.clear();
-    Worklist.insert(ChangedAAs.begin(), ChangedAAs.end());
+    IterationWorklist.clear();
+    IterationWorklist.insert(IterationChangedAAs.begin(),
+                             IterationChangedAAs.end());
 
-  } while (!Worklist.empty() && (IterationCounter++ < MaxFixpointIterations ||
-                                 VerifyMaxFixpointIterations));
-  LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration done after: "
-                    << IterationCounter << "/" << MaxFixpointIterations
-                    << " iterations\n");
+  } while (!IterationWorklist.empty() &&
+           (IterationCounter++ < ItCount || Verify));
 
-  // Reset abstract arguments not settled in a sound fixpoint by now. This
-  // happens when we stopped the fixpoint iteration early. Note that only the
-  // ones marked as "changed" *and* the ones transitively depending on them
-  // need to be reverted to a pessimistic state. Others might not be in a
-  // fixpoint state but we can use the optimistic results for them anyway.
+  LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration run for: "
+                    << IterationCounter << "/" << ItCount << " iterations\n");
+
+  if (Verify && IterationCounter != ItCount) {
+    errs() << "\n[Attributor] Fixpoint iteration done after: "
+           << IterationCounter << "/" << ItCount << " iterations\n";
+    llvm_unreachable("The fixpoint was not reached with exactly the number of "
+                     "specified iterations!");
+  }
+
+  return IterationCounter;
+}
+
+void Attributor::settleAA() {
   SmallPtrSet<AbstractAttribute *, 32> Visited;
-  for (unsigned u = 0; u < ChangedAAs.size(); u++) {
-    AbstractAttribute *ChangedAA = ChangedAAs[u];
+  for (unsigned u = 0; u < IterationChangedAAs.size(); u++) {
+    AbstractAttribute *ChangedAA = IterationChangedAAs[u];
     if (!Visited.insert(ChangedAA).second)
       continue;
 
@@ -1163,7 +1168,7 @@ void Attributor::runTillFixpoint() {
     }
 
     while (!ChangedAA->Deps.empty()) {
-      ChangedAAs.push_back(
+      IterationChangedAAs.push_back(
           cast<AbstractAttribute>(ChangedAA->Deps.back().getPointer()));
       ChangedAA->Deps.pop_back();
     }
@@ -1174,15 +1179,12 @@ void Attributor::runTillFixpoint() {
       dbgs() << "\n[Attributor] Finalized " << Visited.size()
              << " abstract attributes.\n";
   });
+}
 
-  if (VerifyMaxFixpointIterations &&
-      IterationCounter != MaxFixpointIterations) {
-    errs() << "\n[Attributor] Fixpoint iteration done after: "
-           << IterationCounter << "/" << MaxFixpointIterations
-           << " iterations\n";
-    llvm_unreachable("The fixpoint was not reached with exactly the number of "
-                     "specified iterations!");
-  }
+void Attributor::runTillFixpoint() {
+  TimeTraceScope TimeScope("Attributor::runTillFixpoint");
+  runIterationForTimes(MaxFixpointIterations, VerifyMaxFixpointIterations);
+  settleAA();
 }
 
 ChangeStatus Attributor::manifestAttributes() {
