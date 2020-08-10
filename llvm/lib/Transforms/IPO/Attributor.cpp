@@ -174,6 +174,116 @@ static bool addIfNotExistent(LLVMContext &Ctx, const Attribute &Attr,
   llvm_unreachable("Expected enum or string attribute!");
 }
 
+/// Create a shallow wrapper for \p F such that \p F has internal linkage
+/// afterwards. It also sets the original \p F 's name to anonymous
+///
+/// A wrapper is a function with the same type (and attributes) as \p F
+/// that will only call \p F and return the result, if any.
+///
+/// Assuming the declaration of looks like:
+///   rty F(aty0 arg0, ..., atyN argN);
+///
+/// The wrapper will then look as follows:
+///   rty wrapper(aty0 arg0, ..., atyN argN) {
+///     return F(arg0, ..., argN);
+///   }
+///
+static void createShallowWrapper(Function &F) {
+  assert(AllowShallowWrappers &&
+         "Cannot create a wrapper if it is not allowed!");
+  assert(!F.isDeclaration() && "Cannot create a wrapper around a declaration!");
+
+  Module &M = *F.getParent();
+  LLVMContext &Ctx = M.getContext();
+  FunctionType *FnTy = F.getFunctionType();
+
+  Function *Wrapper =
+      Function::Create(FnTy, F.getLinkage(), F.getAddressSpace(), F.getName());
+  F.setName(""); // set the inside function anonymous
+  M.getFunctionList().insert(F.getIterator(), Wrapper);
+
+  F.setLinkage(GlobalValue::InternalLinkage);
+
+  F.replaceAllUsesWith(Wrapper);
+  assert(F.use_empty() && "Uses remained after wrapper was created!");
+
+  // Move the COMDAT section to the wrapper.
+  // TODO: Check if we need to keep it for F as well.
+  Wrapper->setComdat(F.getComdat());
+  F.setComdat(nullptr);
+
+  // Copy all metadata and attributes but keep them on F as well.
+  SmallVector<std::pair<unsigned, MDNode *>, 1> MDs;
+  F.getAllMetadata(MDs);
+  for (auto MDIt : MDs)
+    Wrapper->addMetadata(MDIt.first, *MDIt.second);
+  Wrapper->setAttributes(F.getAttributes());
+
+  // Create the call in the wrapper.
+  BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", Wrapper);
+
+  SmallVector<Value *, 8> Args;
+  auto FArgIt = F.arg_begin();
+  for (Argument &Arg : Wrapper->args()) {
+    Args.push_back(&Arg);
+    Arg.setName((FArgIt++)->getName());
+  }
+
+  CallInst *CI = CallInst::Create(&F, Args, "", EntryBB);
+  CI->setTailCall(true);
+  CI->addAttribute(AttributeList::FunctionIndex, Attribute::NoInline);
+  ReturnInst::Create(Ctx, CI->getType()->isVoidTy() ? nullptr : CI, EntryBB);
+
+  NumFnShallowWrapperCreated++;
+}
+
+/// Make another copy of the function \p F such that the copied version has
+/// internal linkage afterwards and can be analysed. Then we replace all uses
+/// of the original function to the copied one
+///
+/// Only non-exactly defined functions that have `linkonce_odr` or `weak_odr`
+/// linkage can be internalized because these linkages guarantee that other
+/// definitions with the same name have the same semantics as this one
+///
+static Function *internalizeFunction(Function &F) {
+  assert(AllowDeepWrapper && "Cannot create a copy if not allowed.");
+  assert(!F.hasExactDefinition() &&
+         ((F.getLinkage() != llvm::GlobalValue::LinkOnceAnyLinkage) ||
+          (F.getLinkage() != llvm::GlobalValue::WeakAnyLinkage)) &&
+         "Trying to internalize function which cannot be internalized.");
+
+  Module &M = *F.getParent();
+  FunctionType *FnTy = F.getFunctionType();
+
+  // create a copy of the current function
+  Function *Copied =
+      Function::Create(FnTy, llvm::GlobalValue::InternalLinkage,
+                       F.getAddressSpace(), F.getName() + ".internalized");
+  ValueToValueMapTy VMap;
+  auto *NewFArgIt = Copied->arg_begin();
+  for (auto &Arg : F.args()) {
+    auto ArgName = Arg.getName();
+    NewFArgIt->setName(ArgName);
+    VMap[&Arg] = &(*NewFArgIt++);
+  }
+  SmallVector<ReturnInst *, 8> Returns;
+
+  // Copy the body of the original function to the new one
+  CloneFunctionInto(Copied, &F, VMap, /* ModuleLevelChanges */ false, Returns);
+
+  // Copy metadata
+  SmallVector<std::pair<unsigned, MDNode *>, 1> MDs;
+  F.getAllMetadata(MDs);
+  for (auto MDIt : MDs)
+    Copied->addMetadata(MDIt.first, *MDIt.second);
+
+  M.getFunctionList().insert(F.getIterator(), Copied);
+  F.replaceAllUsesWith(Copied);
+  Copied->setDSOLocal(true);
+
+  return Copied;
+}
+
 Argument *IRPosition::getAssociatedArgument() const {
   if (getPositionKind() == IRP_ARGUMENT)
     return cast<Argument>(&getAnchorValue());
@@ -1030,7 +1140,6 @@ void Attributor::runTillFixpoint() {
 
   } while (!Worklist.empty() && (IterationCounter++ < MaxFixpointIterations ||
                                  VerifyMaxFixpointIterations));
-
   LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration done after: "
                     << IterationCounter << "/" << MaxFixpointIterations
                     << " iterations\n");
@@ -1357,116 +1466,6 @@ ChangeStatus Attributor::updateAA(AbstractAttribute &AA) {
   assert(PoppedDV == &DV && "Inconsistent usage of the dependence stack!");
 
   return CS;
-}
-
-/// Create a shallow wrapper for \p F such that \p F has internal linkage
-/// afterwards. It also sets the original \p F 's name to anonymous
-///
-/// A wrapper is a function with the same type (and attributes) as \p F
-/// that will only call \p F and return the result, if any.
-///
-/// Assuming the declaration of looks like:
-///   rty F(aty0 arg0, ..., atyN argN);
-///
-/// The wrapper will then look as follows:
-///   rty wrapper(aty0 arg0, ..., atyN argN) {
-///     return F(arg0, ..., argN);
-///   }
-///
-static void createShallowWrapper(Function &F) {
-  assert(AllowShallowWrappers &&
-         "Cannot create a wrapper if it is not allowed!");
-  assert(!F.isDeclaration() && "Cannot create a wrapper around a declaration!");
-
-  Module &M = *F.getParent();
-  LLVMContext &Ctx = M.getContext();
-  FunctionType *FnTy = F.getFunctionType();
-
-  Function *Wrapper =
-      Function::Create(FnTy, F.getLinkage(), F.getAddressSpace(), F.getName());
-  F.setName(""); // set the inside function anonymous
-  M.getFunctionList().insert(F.getIterator(), Wrapper);
-
-  F.setLinkage(GlobalValue::InternalLinkage);
-
-  F.replaceAllUsesWith(Wrapper);
-  assert(F.use_empty() && "Uses remained after wrapper was created!");
-
-  // Move the COMDAT section to the wrapper.
-  // TODO: Check if we need to keep it for F as well.
-  Wrapper->setComdat(F.getComdat());
-  F.setComdat(nullptr);
-
-  // Copy all metadata and attributes but keep them on F as well.
-  SmallVector<std::pair<unsigned, MDNode *>, 1> MDs;
-  F.getAllMetadata(MDs);
-  for (auto MDIt : MDs)
-    Wrapper->addMetadata(MDIt.first, *MDIt.second);
-  Wrapper->setAttributes(F.getAttributes());
-
-  // Create the call in the wrapper.
-  BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", Wrapper);
-
-  SmallVector<Value *, 8> Args;
-  auto FArgIt = F.arg_begin();
-  for (Argument &Arg : Wrapper->args()) {
-    Args.push_back(&Arg);
-    Arg.setName((FArgIt++)->getName());
-  }
-
-  CallInst *CI = CallInst::Create(&F, Args, "", EntryBB);
-  CI->setTailCall(true);
-  CI->addAttribute(AttributeList::FunctionIndex, Attribute::NoInline);
-  ReturnInst::Create(Ctx, CI->getType()->isVoidTy() ? nullptr : CI, EntryBB);
-
-  NumFnShallowWrapperCreated++;
-}
-
-/// Make another copy of the function \p F such that the copied version has
-/// internal linkage afterwards and can be analysed. Then we replace all uses
-/// of the original function to the copied one
-///
-/// Only non-exactly defined functions that have `linkonce_odr` or `weak_odr`
-/// linkage can be internalized because these linkages guarantee that other
-/// definitions with the same name have the same semantics as this one
-///
-static Function *internalizeFunction(Function &F) {
-  assert(AllowDeepWrapper && "Cannot create a copy if not allowed.");
-  assert(!F.hasExactDefinition() &&
-         ((F.getLinkage() != llvm::GlobalValue::LinkOnceAnyLinkage) ||
-          (F.getLinkage() != llvm::GlobalValue::WeakAnyLinkage)) &&
-         "Trying to internalize function which cannot be internalized.");
-
-  Module &M = *F.getParent();
-  FunctionType *FnTy = F.getFunctionType();
-
-  // create a copy of the current function
-  Function *Copied =
-      Function::Create(FnTy, llvm::GlobalValue::InternalLinkage,
-                       F.getAddressSpace(), F.getName() + ".internalized");
-  ValueToValueMapTy VMap;
-  auto *NewFArgIt = Copied->arg_begin();
-  for (auto &Arg : F.args()) {
-    auto ArgName = Arg.getName();
-    NewFArgIt->setName(ArgName);
-    VMap[&Arg] = &(*NewFArgIt++);
-  }
-  SmallVector<ReturnInst *, 8> Returns;
-
-  // Copy the body of the original function to the new one
-  CloneFunctionInto(Copied, &F, VMap, /* ModuleLevelChanges */ false, Returns);
-
-  // Copy metadata
-  SmallVector<std::pair<unsigned, MDNode *>, 1> MDs;
-  F.getAllMetadata(MDs);
-  for (auto MDIt : MDs)
-    Copied->addMetadata(MDIt.first, *MDIt.second);
-
-  M.getFunctionList().insert(F.getIterator(), Copied);
-  F.replaceAllUsesWith(Copied);
-  Copied->setDSOLocal(true);
-
-  return Copied;
 }
 
 bool Attributor::isValidFunctionSignatureRewrite(
