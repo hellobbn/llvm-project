@@ -120,6 +120,11 @@ static cl::opt<bool> PrintDependencies("attributor-print-dep", cl::Hidden,
                                        cl::desc("Print attribute dependencies"),
                                        cl::init(false));
 
+static cl::opt<unsigned> WarmUpIterationCount(
+    "attributor-warmup-iterations", cl::Hidden,
+    cl::desc("Number of iterations to form a nearly complete dependency graph"),
+    cl::init(4));
+
 /// Logic operators for the change status enum class.
 ///
 ///{
@@ -282,6 +287,60 @@ static Function *internalizeFunction(Function &F) {
   Copied->setDSOLocal(true);
 
   return Copied;
+}
+
+/// Calculate the cost of internalizing the function \p F and determine whether
+/// internalizing such function could be beneficial.
+InternalizeCost &Attributor::getInternalizeCost(Function &F) {
+  // TODO: for now we only rule out situations where the function cannot be
+  //       internalized. The detailed algorithm will be implemented later.
+  if (F.isDeclaration() || F.hasExactDefinition() || !F.getNumUses() ||
+      F.getLinkage() == GlobalValue::LinkOnceAnyLinkage ||
+      F.getLinkage() == GlobalValue::WeakAnyLinkage) {
+    return InternalizeCost::getNever(F);
+  }
+
+  // We start analyse the function here
+  unsigned Threshold = InternalizeConstants::DefaultThreshold;
+  int Cost = 0;
+
+  // For each instruction for a function, we increase the cost
+  Cost += InternalizeConstants::InstrCost * F.getInstructionCount();
+
+  // For each IP information derived from this function, we bonus
+  // with some points
+  // For each AA whose scope is the non-exact function, we find number
+  // of AAs that is reachable from this AA that does not have the same
+  // scope as the original one.
+  SmallPtrSet<AbstractAttribute *, 16> VisitedList;
+  SmallVector<AbstractAttribute *, 16> WorkList;
+
+  for (AbstractAttribute *AA : DG.SyntheticRoot)
+    if (AA->getAnchorScope() == &F && VisitedList.insert(AA).second) {
+      int NumVisited = 0;
+
+      WorkList.push_back(AA);
+
+      while (!WorkList.empty()) {
+        auto *CurrAA = WorkList.pop_back_val();
+        for (AbstractAttribute *DepAA : *CurrAA) {
+          if (DepAA->getAnchorScope() != &F &&
+              VisitedList.insert(DepAA).second) {
+            WorkList.push_back(DepAA);
+            NumVisited++;
+          }
+        }
+      }
+
+      Cost -= NumVisited * InternalizeConstants::DepBonus;
+    }
+
+  if (Cost < 0)
+    Cost = 0;
+
+  errs() << "Function " << F.getName() << " internalize cost: " << Cost << '\n';
+
+  return InternalizeCost::get(Cost, Threshold, F);
 }
 
 Argument *IRPosition::getAssociatedArgument() const {
@@ -1048,8 +1107,83 @@ bool Attributor::checkForAllReadWriteInstructions(
 
   return true;
 }
+
+void Attributor::attributorWarmUp() {
+  TimeTraceScope TimeScope("Attributor::attributorWarmUp");
+  // Check if warm up is needed, this is done by checking the
+  // WarmUpIterationCount variable
+  if (WarmUpIterationCount != 0 && AllowDeepWrapper)
+    WarmUpPeriod = true;
+  else
+    return;
+
+  // Run the fixpoint iteration for some time to get a nearly (if not already)
+  // complete dependency graph.
+  runIterationForTimes(WarmUpIterationCount);
+
+  // Handle internalization cost analysis here. We now have a nearly complete
+  // dependency graph, we can calculate the cost of internalizing functions.
+  // Specifically:
+  // 1. Iterate through all functions, find functions that have non-exact
+  // definition but could be internalized.
+  // 2. Create and cache cost interface for all those functions
+  for (unsigned u = 0; u < Functions.size(); u ++) {
+    Function *F = Functions[u];
+    if (!F->hasExactDefinition() && isFunctionIPOAmendable(*F)) {
+      // Get the internalization cost of current function.
+      // TODO: Actually maybe all non-exact functions (even those with non-odr
+      //       linkage should be analysed), so that we can keep consistency of
+      //       the code. Another thought is creating interfaces for ALL
+      //       functions. 
+      auto IC = getInternalizeCost(*F);
+
+      // If the function can be internalized, we internalize this function
+      if (IC.shouldInternalize()) {
+        auto *NewF = internalizeFunction(*F);
+        Functions.insert(NewF);
+        CGUpdater.registerOutlinedFunction(*NewF);
+        for (const Use &U : NewF->uses())
+          if (CallBase *CB = dyn_cast<CallBase>(U.getUser())) {
+            auto *CallerF = CB->getCaller();
+            CGUpdater.reanalyzeFunction(*CallerF);
+          }
+      }
+    }
+  }
+
+  // All functions that are non-exact defined but is IPO amendable should
+  // be invalidated because we need to transfer all references of the
+  // original function to the internalized one. If a non-exact function is
+  // analysed but should not be internalized, then it might be replaced
+  // later by a stronger definition, so AAs on its scope are no longer
+  // valid. If a non-exact function is analysed and internalized, then
+  // we are using the internalized version of it and the AAs on the origial
+  // function is no longer valid.
+  // TODO: However, for non-exact functions that are internalized, we might
+  //       not need to clear AAs on this scope. Because in current
+  //       translation unit, this function is no longer used.
+  // TODO: For now we simply delete all AAs and re-create them to force the
+  //       re-iteration on the new IR code.
+  WarmUpPeriod = false;
+  for (AbstractAttribute *AA : DG.SyntheticRoot) {
+    AA->~AbstractAttribute();
+  }
+
+  // reset all vectors in the attributor
+  DG.SyntheticRoot.Deps.clear();
+  VisitedFunctions.clear();
+  AAMap.clear();
+  IterationWorklist.clear();
+  IterationInvalidAAs.clear();
+  IterationChangedAAs.clear();
   
+  // re-create all AAs for each function
+  for (Function *F : Functions)
+    identifyDefaultAbstractAttributes(*F);
+}
+
 unsigned Attributor::runIterationForTimes(const unsigned ItCount, bool Verify) {
+  TimeTraceScope TimeScope("Attributor::runFor" + std::to_string(ItCount) + "Times");
   LLVM_DEBUG(dbgs() << "[Attributor] Identified and initialized "
                     << DG.SyntheticRoot.Deps.size()
                     << " abstract attributes.\n");
@@ -1423,6 +1557,8 @@ ChangeStatus Attributor::run() {
   TimeTraceScope TimeScope("Attributor::run");
 
   SeedingPeriod = false;
+  attributorWarmUp();
+
   runTillFixpoint();
 
   // dump graphs on demand
@@ -1866,6 +2002,21 @@ void Attributor::rememberDependences() {
   }
 }
 
+bool Attributor::isFunctionIPOAmendable(const Function &F) {
+  // If deep wrappers are allowed, functions with odr non-exact definitions
+  // are IPO amandable.
+  // FIXME: if the function has not been used (F.getNumUses() == 0), should it
+  //        be analysed?
+  if (AllowDeepWrapper && WarmUpPeriod)
+    if (!F.isDeclaration() && !F.hasExactDefinition() &&
+        F.getLinkage() != GlobalValue::LinkOnceAnyLinkage &&
+        F.getLinkage() != GlobalValue::WeakAnyLinkage) {
+      return true;
+    }
+
+  return F.hasExactDefinition() || InfoCache.InlineableFunctions.count(&F);
+}
+
 void Attributor::identifyDefaultAbstractAttributes(Function &F) {
   if (!VisitedFunctions.insert(&F).second)
     return;
@@ -2082,6 +2233,15 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
   assert(Success && "Expected the check call to be successful!");
 }
 
+bool Attributor::shouldInternalizeFunction(Function &F) {
+  if (auto *IC = InternalizationMap[&F])
+    return IC->shouldInternalize();
+  else {
+    InternalizationMap[&F] = &getInternalizeCost(F);
+    return InternalizationMap[&F]->shouldInternalize();
+  }
+}
+
 /// Helpers to ease debugging through output streams and print calls.
 ///
 ///{
@@ -2201,27 +2361,6 @@ static bool runAttributorOnFunctions(InformationCache &InfoCache,
     for (Function *F : Functions)
       if (!A.isFunctionIPOAmendable(*F))
         createShallowWrapper(*F);
-
-  // Internalize non-exact functions
-  // TODO: for now we eagerly internalize functions without calculating the
-  //       cost, we need a cost interface to determine whether internalizing
-  //       a function is "benefitial"
-  if (AllowDeepWrapper)
-    for (Function *F : Functions)
-      if (!F->hasExactDefinition() && F->getNumUses() &&
-          F->getLinkage() != llvm::GlobalValue::LinkOnceAnyLinkage &&
-          F->getLinkage() != llvm::GlobalValue::WeakAnyLinkage) {
-        Function *NewF = internalizeFunction(*F);
-        Functions.insert(NewF);
-
-        // Update call graph
-        CGUpdater.registerOutlinedFunction(*NewF);
-        for (const Use &U : NewF->uses())
-          if (CallBase *CB = dyn_cast<CallBase>(U.getUser())) {
-            auto *CallerF = CB->getCaller();
-            CGUpdater.reanalyzeFunction(*CallerF);
-          }
-      }
 
   for (Function *F : Functions) {
     if (F->hasExactDefinition())

@@ -133,6 +133,22 @@ struct AAIsDead;
 
 class Function;
 
+namespace InternalizeConstants {
+// TODO: Pass opt level and other varibles from pass manager to attributor
+//       so that we can change the threshold accordingly.
+/// Default threshold
+const int DefaultThreshold = 100;
+
+// Various magic constants used to adjust heuristics
+
+/// Each instruction in the function cost 5 points
+const int InstrCost = 5;
+
+/// Each AA that depends on the non-exact function will bonus 5 points
+const int DepBonus = 5;
+
+} // namespace InternalizeConstants
+
 /// Simple enum classes that forces properties to be spelled out explicitly.
 ///
 ///{
@@ -149,6 +165,58 @@ enum class DepClassTy {
   OPTIONAL,
 };
 ///}
+
+/// Represents the cost of internalizing a function.
+///
+/// The cost represents a unitless amount; smaller values increase the
+/// likelihood of the function being internalized.
+class InternalizeCost {
+  enum SentinelValues {
+    AlwaysInternalizeCost = INT_MIN,
+    NeverInternalizeCost = INT_MAX
+  };
+
+  /// The function to be internalized
+  Function &F;
+
+  /// The estimated cost of internalizing a function
+  int Cost = 0;
+
+  /// The threshold against which this cost is computed.
+  int Threshold = 0;
+
+  /// Trivial constructor
+  InternalizeCost(Function &F, int Cost, int Threshold)
+      : F(F), Cost(Cost), Threshold(Threshold) {}
+
+public:
+  static InternalizeCost &get(int Cost, int Threshold, Function &F) {
+    return *new InternalizeCost(F, Cost, Threshold);
+  }
+  static InternalizeCost &getNever(Function &F) {
+    return *new InternalizeCost(F, NeverInternalizeCost, 0);
+  }
+  static InternalizeCost &getAlways(Function &F) {
+    return *new InternalizeCost(F, AlwaysInternalizeCost, 0);
+  }
+
+  /// Test whether the internalize cost is low enough for internalizing
+  explicit operator bool() const { return Cost < Threshold; }
+  bool shouldInternalize() const { return Cost < Threshold; }
+
+  /// Get the function this cost corresponds to
+  Function &getFunction() const { return F; }
+
+  /// Get the internalize cost estimate.
+  int getCost() const { return Cost; }
+
+  /// Get the threshold against which the cost was computed.
+  int getThreshold() const { return Threshold; }
+
+  /// Get the cost delta from the threshold for internalizing.
+  /// Returns a negative value if the cost is too high to internalize
+  int getCostDelta() const { return Threshold - getCost(); }
+};
 
 /// The data structure for the nodes of a dependency graph
 struct AADepGraphNode {
@@ -1128,13 +1196,14 @@ struct Attributor {
   /// various places.
   void identifyDefaultAbstractAttributes(Function &F);
 
+  /// Determine whether the function \p F can be internalized
+  bool shouldInternalizeFunction(Function &F);
+
   /// Determine whether the function \p F is IPO amendable
   ///
   /// If a function is exactly defined or it has alwaysinline attribute
   /// and is viable to be inlined, we say it is IPO amendable
-  bool isFunctionIPOAmendable(const Function &F) {
-    return F.hasExactDefinition() || InfoCache.InlineableFunctions.count(&F);
-  }
+  bool isFunctionIPOAmendable(const Function &F);
 
   /// Mark the internal function \p F as live.
   ///
@@ -1414,6 +1483,19 @@ struct Attributor {
   BumpPtrAllocator &Allocator;
 
 private:
+  /// This method will do an warm up fix-point iteration, and the number
+  /// of iterations is decided by WarmUpIterationCount. After the number
+  /// of iterations, it will do analysis based on the dependency graph
+  /// produced.
+  ///
+  /// We use this method to get a nearly (if not already) complete
+  /// dependency graph so that we are able to do internalization
+  /// cost analysis that is based on the graph.
+  ///
+  /// This method should not produce any side effects.
+  /// FIXME: we may change the name.
+  void attributorWarmUp();
+
   /// This method will run fixpoint iteration for specified times, and if
   /// specified, clear all side effects after running such iteration. This
   /// can also verify if we actually run the needed iteration count.
@@ -1465,6 +1547,10 @@ private:
   /// Run `::update` on \p AA and track the dependences queried while doing so.
   /// Also adjust the state if we know further updates are not necessary.
   ChangeStatus updateAA(AbstractAttribute &AA);
+
+  /// Calculate the cost of internalizing the function \p F and determine
+  /// whether internalizing such function could be beneficial.
+  InternalizeCost &getInternalizeCost(Function &F);
 
   /// Remember the dependences on the top of the dependence stack such that they
   /// may trigger further updates. (\see DependenceStack)
@@ -1544,6 +1630,10 @@ private:
   /// A set to remember the functions we already assume to be live and visited.
   DenseSet<const Function *> VisitedFunctions;
 
+  /// A map for caching results of queries for getInternalizeCost
+  /// FIXME: maybe we don't need this
+  DenseMap<const Function *, InternalizeCost *> InternalizationMap;
+
   /// Uses we replace with a new value after manifest is done. We will remove
   /// then trivially dead instructions as well.
   DenseMap<Use *, Value *> ToBeChangedUses;
@@ -1557,6 +1647,10 @@ private:
   /// Wheather attributes are being `seeded`, always false after ::run function
   /// gets called \see getOrCreateAAFor.
   bool SeedingPeriod = true;
+
+  /// Whether the attributor is in warming up period. Will be false after number
+  /// of iterations specified WarmUpIterationCount
+  bool WarmUpPeriod = true;
 
   /// Sets storing states when doing fixpoint iterations.
   ///

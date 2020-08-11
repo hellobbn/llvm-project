@@ -141,3 +141,29 @@ entry:
   %ret4 = call i32 @inner4(i32 %ret3, i32 %ret3)
   ret i32 %ret4
 }
+
+; This tests whether the cost interface works
+; FIXME: temp solution
+define linkonce_odr i32* @checkAndAdvance(i32* align 16 %0) {
+  %2 = load i32, i32* %0, align 4
+  %3 = icmp eq i32 %2, 0
+  br i1 %3, label %4, label %7
+
+4:                                                ; preds = %1
+  %5 = getelementptr inbounds i32, i32* %0, i64 4
+  %6 = call i32* @checkAndAdvance(i32* %5)
+  br label %8
+
+7:                                                ; preds = %1
+  br label %8
+
+8:                                                ; preds = %7, %4
+  %.0 = phi i32* [ %6, %4 ], [ %0, %7 ]
+  ret i32* %.0
+}
+
+; outer
+define i32* @outerCK(i32* %in) {
+  %out = call i32* @checkAndAdvance(i32* %in)
+  ret i32* %out
+}
