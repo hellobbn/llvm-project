@@ -2465,6 +2465,36 @@ struct AAUndefinedBehavior
   static const char ID;
 };
 
+/// An abstract attribute for loops.
+struct AALoop : public StateWrapper<BooleanState, AbstractAttribute> {
+  using Base = StateWrapper<BooleanState, AbstractAttribute>;
+  AALoop(const IRPosition &IRP, Attributor &A) : Base(IRP) {}
+
+  /// Return true if the loop is assumed "never-endless"
+  virtual bool isAssumedNeverEndless(Loop *) const = 0;
+
+  /// Return true if the loop is known "always-endless"
+  virtual bool isKnownAlwaysEndless(Loop *) const = 0;
+
+  /// Create an abstract attribute view for the position \p IRP
+  static AALoop &createForPosition(const IRPosition &IRP, Attributor &A);
+
+  /// See AbstractAttribute::getName()
+  const std::string getName() const override { return "AALoop"; }
+
+  /// See AbstractAttribute::getIdAddr()
+  const char *getIdAddr() const override { return &ID; }
+
+  /// This function should return true if the type of \p AA is
+  /// AALoop
+  static bool classof(const AbstractAttribute *AA) {
+    return (AA->getIdAddr() == &ID);
+  }
+
+  /// Unique ID (due to the unique address)
+  static const char ID;
+};
+
 /// An abstract interface to determine reachability of point A to B.
 struct AAReachability : public StateWrapper<BooleanState, AbstractAttribute> {
   using Base = StateWrapper<BooleanState, AbstractAttribute>;

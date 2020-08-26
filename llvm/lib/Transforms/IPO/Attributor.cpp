@@ -21,6 +21,7 @@
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/LazyValueInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
 #include "llvm/Analysis/MustExecute.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -1910,6 +1911,10 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
 
   // Every function might contain instructions that cause "undefined behavior".
   getOrCreateAAFor<AAUndefinedBehavior>(FPos);
+
+  // Every function might contain loops
+  // FIXME: lets only analyse functions that only contain loops
+  getOrCreateAAFor<AALoop>(FPos);
 
   // Every function can be nounwind.
   getOrCreateAAFor<AANoUnwind>(FPos);

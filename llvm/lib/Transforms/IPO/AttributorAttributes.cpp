@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 
 #include "llvm/ADT/SCCIterator.h"
@@ -132,6 +133,7 @@ PIPE_OPERATOR(AAPrivatizablePtr)
 PIPE_OPERATOR(AAUndefinedBehavior)
 PIPE_OPERATOR(AAPotentialValues)
 PIPE_OPERATOR(AANoUndef)
+PIPE_OPERATOR(AALoop)
 
 #undef PIPE_OPERATOR
 } // namespace llvm
@@ -7880,6 +7882,111 @@ struct AANoUndefCallSiteReturned final
   /// See AbstractAttribute::trackStatistics()
   void trackStatistics() const override { STATS_DECLTRACK_CSRET_ATTR(noundef) }
 };
+
+/// ------------------------ Loop Attribute -----------------------------------
+
+struct AALoopImpl : public AALoop {
+  AALoopImpl(const IRPosition &IRP, Attributor &A) : AALoop(IRP, A) {}
+
+  /// See AbstractAttribute::getAsStr()
+  const std::string getAsStr() const override {
+    std::string Str;
+    llvm::raw_string_ostream OS(Str);
+    OS << "Loop always_endless / may_never_endless: " << KnownAELoops.size()
+       << '/' << MayNELoops.size() << '\n';
+  }
+
+  /// See AbstractAttribute::initialize(...).
+  void initialize(Attributor &A) override {
+    // get loop analysis
+    Function *F = getAnchorScope();
+    assert(F && "AALoop expect function scope!");
+    LoopInfo *LI =
+        A.getInfoCache().getAnalysisResultForFunction<LoopAnalysis>(*F);
+    if (!LI) {
+      indicatePessimisticFixpoint();
+      return;
+    }
+
+    // Check loops for the function and loops that are obviously endless.
+    // TODO: for now we don't handle dead loops here. Such loop will be
+    // eliminated using
+    //       DCE I think, the header will never be accessed.
+    for (Loop *L : LI->getLoopsInPreorder()) {
+      SmallVector<BasicBlock *, 4> ExitingBlocks;
+      L->getExitingBlocks(ExitingBlocks);
+
+      // If a loop does not have exiting block, we can safely say that this loop
+      // is endless
+      if (!ExitingBlocks.size())
+        KnownAELoops.insert(L);
+    }
+  }
+
+  ChangeStatus updateImpl(Attributor &A) override {
+    const size_t AEPrevSize = KnownAELoops.size();
+    const size_t NEPrevSize = MayNELoops.size();
+
+    Function *F = getAnchorScope();
+    LoopInfo *LI =
+        A.getInfoCache().getAnalysisResultForFunction<LoopAnalysis>(*F);
+
+    // Check for all loops, if the entering condition - the cmp result is always
+    // true, we determine this loop as endless
+    for (Loop *L : LI->getLoopsInPreorder()) {
+      if (KnownAELoops.count(L) && MayNELoops.count(L))
+        continue;
+
+      BasicBlock *HeaderBB = L->getHeader();
+      for (Instruction &I : *HeaderBB) {
+        if (auto *BI = dyn_cast<BranchInst>(&I)) {
+          auto *Op = BI->getOperand(0);
+          const auto &OpAA =
+              A.getAAFor<AAValueConstantRange>(*this, IRPosition::value(*Op));
+          auto KnownState = OpAA.getKnown();
+
+          if (KnownState.contains(APInt(1, 1)))
+            KnownAELoops.insert(L);
+          else if (KnownState.isFullSet())
+            MayNELoops.insert(L);
+        }
+      }
+    }
+
+    if (AEPrevSize != KnownAELoops.size() || NEPrevSize != MayNELoops.size())
+      return ChangeStatus::CHANGED;
+
+    return ChangeStatus::UNCHANGED;
+  }
+
+  bool isKnownAlwaysEndless(Loop *L) const override {
+    return KnownAELoops.count(L);
+  }
+
+  bool isAssumedNeverEndless(Loop *L) const override {
+    return MayNELoops.count(L);
+  }
+
+protected:
+  /// A set of all the loops that are known to be always endless (never
+  /// terminate)
+  SmallPtrSet<Loop *, 8> KnownAELoops;
+
+private:
+  /// A set of loops that are assumed to terminate.
+  SmallPtrSet<Loop *, 8> MayNELoops;
+};
+
+struct AALoopFunction final : AALoopImpl {
+  AALoopFunction(const IRPosition &IRP, Attributor &A) : AALoopImpl(IRP, A) {}
+
+  /// See AbstractAttribute::trackStatistics()
+  void trackStatistics() const override {
+    STATS_DECL(AlwaysEndlessLoops, Loop,
+               "Number of loops known to be always-endless");
+    BUILD_STAT_NAME(AlwaysEndlessLoops, Loop) += KnownAELoops.size();
+  }
+};
 } // namespace
 
 const char AAReturnedValues::ID = 0;
@@ -7905,6 +8012,7 @@ const char AAMemoryLocation::ID = 0;
 const char AAValueConstantRange::ID = 0;
 const char AAPotentialValues::ID = 0;
 const char AANoUndef::ID = 0;
+const char AALoop::ID = 0;
 
 // Macro magic to create the static generator function for attributes that
 // follow the naming scheme.
@@ -8022,6 +8130,7 @@ CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAIsDead)
 CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AANoFree)
 
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAHeapToStack)
+CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AALoop)
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAReachability)
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAUndefinedBehavior)
 
