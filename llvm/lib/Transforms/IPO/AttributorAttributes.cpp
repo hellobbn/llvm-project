@@ -132,6 +132,7 @@ PIPE_OPERATOR(AAPrivatizablePtr)
 PIPE_OPERATOR(AAUndefinedBehavior)
 PIPE_OPERATOR(AAPotentialValues)
 PIPE_OPERATOR(AANoUndef)
+PIPE_OPERATOR(AALoop)
 
 #undef PIPE_OPERATOR
 } // namespace llvm
@@ -7818,6 +7819,24 @@ struct AANoUndefCallSiteReturned final
   /// See AbstractAttribute::trackStatistics()
   void trackStatistics() const override { STATS_DECLTRACK_CSRET_ATTR(noundef) }
 };
+
+/// ------------------------ Loop Attribute -----------------------------------
+
+struct AALoopImpl : public AALoop {
+  AALoopImpl(const IRPosition &IRP, Attributor &A) : AALoop(IRP, A) {}
+
+  /// See AbstractAttribute::getAsStr()
+  const std::string getAsStr() const override {
+    return "TODO: not yet implemented";
+  }
+
+private:
+  /// A set of all the loops that are known to be always endless
+  SmallPtrSet<Loop *, 8> KnownAELoops;
+
+  /// A set of all loops that are assumed to be never endless
+  SmallPtrSet<Loop *, 8> AssumedNELoops;
+};
 } // namespace
 
 const char AAReturnedValues::ID = 0;
@@ -7960,6 +7979,7 @@ CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAIsDead)
 CREATE_ALL_ABSTRACT_ATTRIBUTE_FOR_POSITION(AANoFree)
 
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAHeapToStack)
+CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AALoop)
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAReachability)
 CREATE_FUNCTION_ONLY_ABSTRACT_ATTRIBUTE_FOR_POSITION(AAUndefinedBehavior)
 
